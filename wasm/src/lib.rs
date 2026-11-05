@@ -162,10 +162,14 @@ impl Worker {
         }
         Ok(result)
     }
-    fn resume(&mut self) -> Result<Value, String> {
+    fn resume(&mut self, additional: u64) -> Result<Value, String> {
         let mut saved = self.saved.take().ok_or("no saved search to resume")?;
-        saved.search.run_budget(0, saved.max);
-        Ok(report(&saved))
+        saved.search.run_budget(additional, saved.max);
+        let result = report(&saved);
+        if result["finished"] == false {
+            self.saved = Some(saved);
+        }
+        Ok(result)
     }
     fn reply(&mut self, result: Result<Value, String>) -> *const u8 {
         let value = result.unwrap_or_else(|error| json!({"error":error}));
@@ -222,7 +226,18 @@ pub unsafe extern "C" fn dfs_solve(
 pub extern "C" fn dfs_resume() -> *const u8 {
     WORKER.with(|w| {
         let mut w = w.borrow_mut();
-        let result = w.resume();
+        let result = w.resume(0);
+        w.reply(result)
+    })
+}
+/// Resume the saved search for at most `additional` more branch steps (zero
+/// exhausts it). An unfinished search stays saved for the next call, so a
+/// scheduler can poll `progress` and `est_total` between slices.
+#[no_mangle]
+pub extern "C" fn dfs_resume_budget(additional: u32) -> *const u8 {
+    WORKER.with(|w| {
+        let mut w = w.borrow_mut();
+        let result = w.resume(u64::from(additional));
         w.reply(result)
     })
 }
@@ -241,7 +256,7 @@ mod tests {
             .1;
         for memo in [0, 12] {
             let mut w = Worker::default();
-            assert!(w.resume().is_err());
+            assert!(w.resume(0).is_err());
             let start = w
                 .solve(
                     url,
@@ -250,10 +265,15 @@ mod tests {
                 .unwrap();
             assert_eq!(start["steps"], 10);
             assert_eq!(start["finished"], false);
-            let resumed = w.resume().unwrap();
+            // A budgeted slice keeps the unfinished search saved and reports progress.
+            let slice = w.resume(5).unwrap();
+            assert_eq!(slice["steps"], 15);
+            assert_eq!(slice["finished"], false);
+            assert!(slice["progress"].as_f64().unwrap() < 1.0);
+            let resumed = w.resume(0).unwrap();
             assert_eq!(resumed["finished"], true);
             assert_eq!(resumed["progress"], 1.0);
-            assert!(w.resume().is_err());
+            assert!(w.resume(0).is_err());
             let plain = w
                 .solve(
                     url,
@@ -283,6 +303,6 @@ mod tests {
         assert_eq!(result["race_budget"], 18);
         assert_eq!(result["solutions"], 1);
         assert_eq!(result["answer"]["links"], json!([2, 10, 8]));
-        assert!(w.resume().is_err());
+        assert!(w.resume(0).is_err());
     }
 }

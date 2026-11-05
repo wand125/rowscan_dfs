@@ -175,6 +175,7 @@ are `wasm/target/wasm32-unknown-emscripten/release/deps/dfs_solver.{js,wasm}`.
 | `_dfs_prepare` | `(url_ptr, url_len, options_ptr, options_len)` → metadata reply pointer. |
 | `_dfs_solve` | Same arguments → search reply pointer. |
 | `_dfs_resume` | No arguments → reply pointer after exhausting saved search, subject to `max`. |
+| `_dfs_resume_budget` | `(additional: u32)` → reply pointer after at most that many more branch steps (0 exhausts); an unfinished search stays saved, so callers can poll `progress` / `est_total` between slices. |
 | `_malloc`, `_free` | Allocate and free caller-owned input buffers. |
 
 Inputs are UTF-8 URL and options-JSON buffers with byte lengths. Replies point

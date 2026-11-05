@@ -7,7 +7,7 @@ import subprocess
 parser = argparse.ArgumentParser()
 parser.add_argument('-o', required=True)
 args, rest = parser.parse_known_args()
-exports = {'_dfs_prepare', '_dfs_solve', '_dfs_resume', '_malloc', '_free'}
+exports = {'_dfs_prepare', '_dfs_solve', '_dfs_resume', '_dfs_resume_budget', '_malloc', '_free'}
 cleaned = []
 for arg in rest:
     if arg == '-sSIDE_MODULE=2':
