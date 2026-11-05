@@ -1,0 +1,19 @@
+[package]
+name = "rowscan_dfs"
+version = "0.1.0"
+edition = "2021"
+description = "Row-scan DFS solver for Numberlink"
+license = "MIT"
+
+[features]
+default = []
+stats = []
+# Resumable single-worker browser API.
+browser = []
+
+[dependencies]
+
+[profile.release]
+debug = true
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,19 @@
+[package]
+name = "rowscan_dfs-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Emscripten JSON ABI for the rowscan_dfs Numberlink solver"
+
+[lib]
+name = "dfs_solver"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rowscan_dfs = { path = "..", features = ["browser"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

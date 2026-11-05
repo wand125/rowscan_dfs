@@ -1,0 +1,6 @@
+/target/
+/wasm/target/
+/.cache/
+__pycache__/
+*.pyc
+*.log
