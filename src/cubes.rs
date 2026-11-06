@@ -162,7 +162,9 @@ fn probe<C: CutState>(node: Open<C>, diag: bool, rng: &mut u64) -> f64 {
 }
 fn initialize<C: CutState>(p: &Puzzle, cube: Option<&Cube>, options: &Options) -> Board<C> {
     let mut board = Board::<C>::new(p);
-    board.pruning.data_mut().interval = if options.cut == 0 { 25 } else { options.cut };
+    if C::ENABLED {
+        board.pruning.data_mut().interval = if options.cut == 0 { 25 } else { options.cut };
+    }
     // Match normal root initialization, including eager endpoint checks.
     for y in 1..=p.height {
         for x in 1..=p.width {
@@ -315,6 +317,134 @@ pub fn estimate_cube_size_with_options(
         estimate::<wide::Many<CutCapacity>>(puzzle, cube, probes, seed, options)
     } else {
         estimate::<CutCapacity>(puzzle, cube, probes, seed, options)
+    }
+}
+
+/// Result of a bounded serial search within a direction-0 cube.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CubeOutcome {
+    /// True when the DFS exhausted the cube or reached `max_solutions`.
+    pub finished: bool,
+    /// Solutions found so far, capped at `max_solutions` for open cubes.
+    pub solutions: u64,
+    pub steps: u64,
+}
+
+/// Progress of a bounded serial search within a direction-0 cube.
+#[derive(Debug)]
+pub struct CubeProgress {
+    pub steps: u64,
+    pub progress: f64,
+    pub estimated_total: f64,
+    /// True only when the search exhausted the cube within its budget.
+    pub finished: bool,
+    pub solutions: u64,
+}
+
+fn solve_budget<C: CutState>(
+    puzzle: &Puzzle,
+    cube: &Cube,
+    budget: u64,
+    max_solutions: u64,
+    options: &Options,
+) -> CubeProgress {
+    let mut steps = 0;
+    match classify(
+        initialize::<C>(puzzle, Some(cube), options),
+        options.diag_shortcut,
+        &mut steps,
+    ) {
+        State::Dead => CubeProgress {
+            progress: 1.0,
+            estimated_total: steps as f64,
+            finished: true,
+            solutions: 0,
+            steps,
+        },
+        State::Solution => CubeProgress {
+            progress: 1.0,
+            estimated_total: steps as f64,
+            finished: true,
+            solutions: 1,
+            steps,
+        },
+        State::Open(node) => {
+            let board = node.board;
+            let memo =
+                (options.memo_bits != 0).then(|| Memo::new(options.memo_bits, board.shared.height));
+            let candidate = race::Candidate {
+                board,
+                memo,
+                out: Outcome {
+                    threads: 1,
+                    ..Outcome::default()
+                },
+                good: true,
+                // initialize/classify already performed endpoint checks and propagation.
+                started: true,
+                finished: false,
+                backtracking: false,
+            }
+            .run_cube_budget(budget, max_solutions, puzzle, options);
+            let report = candidate.report();
+            CubeProgress {
+                progress: report.progress,
+                estimated_total: report.estimated_total,
+                finished: candidate.finished,
+                solutions: candidate.out.solutions,
+                steps: candidate.board.steps,
+            }
+        }
+    }
+}
+
+/// Search a cube in identity coordinates, stopping at the step or solution limit.
+/// Threads and logging are ignored; cut, diagonal shortcuts and memo are respected.
+pub fn solve_cube_budget(
+    puzzle: &Puzzle,
+    cube: &Cube,
+    budget: u64,
+    max_solutions: u64,
+    options: &Options,
+) -> CubeOutcome {
+    let result = cube_budget(puzzle, cube, budget, max_solutions, options);
+    CubeOutcome {
+        finished: result.finished,
+        solutions: result.solutions,
+        steps: result.steps,
+    }
+}
+
+/// Estimate a cube from the binary fraction of alternatives consumed by a bounded DFS.
+/// An untouched first branch can report zero progress and an infinite estimate.
+/// Threads and logging are ignored; cut, diagonal shortcuts and memo are respected.
+pub fn estimate_cube_progress(
+    puzzle: &Puzzle,
+    cube: &Cube,
+    budget: u64,
+    options: &Options,
+) -> CubeProgress {
+    cube_budget(puzzle, cube, budget, u64::MAX, options)
+}
+
+fn cube_budget(
+    puzzle: &Puzzle,
+    cube: &Cube,
+    budget: u64,
+    max_solutions: u64,
+    options: &Options,
+) -> CubeProgress {
+    assert!(options.memo_bits <= 28, "memo bits must be 0..=28");
+    if puzzle.pairs > 63 {
+        if options.cut == 0 {
+            solve_budget::<wide::Many<NoCut>>(puzzle, cube, budget, max_solutions, options)
+        } else {
+            solve_budget::<wide::Many<CutCapacity>>(puzzle, cube, budget, max_solutions, options)
+        }
+    } else if options.cut == 0 {
+        solve_budget::<NoCut>(puzzle, cube, budget, max_solutions, options)
+    } else {
+        solve_budget::<CutCapacity>(puzzle, cube, budget, max_solutions, options)
     }
 }
 
@@ -555,6 +685,109 @@ mod tests {
             vec![(true, 0, 0, true), (false, 0, 0, false)]
         );
     }
+    #[test]
+    fn cube_progress_tracks_exhaustion_and_partial_search() {
+        let p = Puzzle::parse(include_str!("../reference/ex3.txt")).unwrap();
+        for cut in [5, 25] {
+            for diag_shortcut in [false, true] {
+                for memo_bits in [0, 12] {
+                    let options = Options {
+                        cut,
+                        diag_shortcut,
+                        memo_bits,
+                        ..Options::none()
+                    };
+                    let split = generate_cubes(&p, 3, &options, 0);
+                    let mut partial = false;
+                    let mut solutions = split.solutions_while_splitting;
+                    for cube in &split.cubes {
+                        let full = estimate_cube_progress(&p, cube, u64::MAX, &options);
+                        let solved = solve_cube_budget(&p, cube, u64::MAX, u64::MAX, &options);
+                        assert!(full.finished);
+                        assert_eq!(full.progress, 1.0);
+                        assert_eq!(full.estimated_total, full.steps as f64);
+                        assert_eq!(
+                            (full.steps, full.solutions),
+                            (solved.steps, solved.solutions)
+                        );
+                        solutions += full.solutions;
+                        let paused = estimate_cube_progress(&p, cube, 100, &options);
+                        if !paused.finished && paused.progress > 0.0 {
+                            partial = true;
+                            assert!(paused.progress < 1.0);
+                            assert!(paused.estimated_total >= paused.steps as f64);
+                            assert!(paused.steps <= 100);
+                        }
+                    }
+                    assert!(
+                        partial,
+                        "no partial progress: cut={cut} diag={diag_shortcut} memo={memo_bits}"
+                    );
+                    assert_eq!(solutions, 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn budgeted_cube_partition_and_limits() {
+        let p = Puzzle::parse(include_str!("../reference/ex3.txt")).unwrap();
+        for cut in [5, 25] {
+            for diag_shortcut in [false, true] {
+                for memo_bits in [0, 12] {
+                    let options = Options {
+                        cut,
+                        diag_shortcut,
+                        memo_bits,
+                        ..Options::none()
+                    };
+                    let expected = solve_with(&p, 0, &options).solutions;
+                    for minimum in [1, 3, 64] {
+                        let split = generate_cubes(&p, minimum, &options, 0);
+                        let mut found = split.solutions_while_splitting;
+                        for cube in &split.cubes {
+                            let result = solve_cube_budget(&p, cube, u64::MAX, u64::MAX, &options);
+                            assert!(result.finished);
+                            found += result.solutions;
+                        }
+                        assert_eq!(found, expected, "{options:?}, minimum {minimum}");
+                    }
+                    let open = &generate_cubes(&p, 1, &options, 0).cubes[0];
+                    let paused = solve_cube_budget(&p, open, 1, u64::MAX, &options);
+                    assert!(!paused.finished);
+                    assert_eq!(paused.steps, 1);
+                    assert_eq!(solve_cube_budget(&p, open, 0, u64::MAX, &options).steps, 0);
+                }
+            }
+        }
+        let p = Puzzle::parse(include_str!(
+            "../tests/fixtures/end_check_across_interior.txt"
+        ))
+        .unwrap();
+        let root = Cube {
+            edges: vec![],
+            next: 0,
+            weight: 0.0,
+        };
+        for cut in [0, 1, 25] {
+            for memo_bits in [0, 12] {
+                let options = Options {
+                    cut,
+                    memo_bits,
+                    ..Options::none()
+                };
+                let all = solve_cube_budget(&p, &root, u64::MAX, u64::MAX, &options);
+                assert!(all.finished && all.solutions > 1);
+                for max in [0, 1, 2] {
+                    let limited = solve_cube_budget(&p, &root, u64::MAX, max, &options);
+                    assert!(limited.finished);
+                    assert_eq!(limited.solutions, max);
+                    assert!(limited.steps <= all.steps);
+                }
+            }
+        }
+    }
+
     #[test]
     fn partitions() {
         for text in [

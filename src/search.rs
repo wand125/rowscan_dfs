@@ -257,7 +257,9 @@ mod parallel;
 mod race;
 #[path = "wide.rs"]
 mod wide;
-pub use cubes::{generate_cubes, Cube, CubeSplit};
+pub use cubes::{
+    estimate_cube_progress, generate_cubes, solve_cube_budget, Cube, CubeOutcome, CubeProgress, CubeSplit,
+};
 #[cfg(feature = "browser")]
 pub use race::browser::BrowserSearch;
 pub use race::{solve_race, CandidateReport, RaceOutcome};

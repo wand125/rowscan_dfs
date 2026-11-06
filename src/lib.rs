@@ -6,7 +6,9 @@ pub use search::BrowserSearch;
 #[cfg(feature = "stats")]
 pub mod stats;
 pub use search::cubes;
-pub use search::{generate_cubes, Cube, CubeSplit};
+pub use search::{
+    estimate_cube_progress, generate_cubes, solve_cube_budget, Cube, CubeOutcome, CubeProgress, CubeSplit,
+};
 pub use search::{solve, solve_race, solve_with, CandidateReport, Options, Outcome, RaceOutcome};
 
 /// Immutable, unpadded input. Clue values are dense pair numbers, zero is blank.

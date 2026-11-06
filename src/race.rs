@@ -1,4 +1,4 @@
-//! Budgeted direction selection. Only this loop has a budget check.
+//! Budgeted direction selection and cube search using the shared serial loop.
 use super::*;
 #[cfg(feature = "browser")]
 #[path = "browser.rs"]
@@ -93,7 +93,7 @@ impl<C: CutState> Candidate<C> {
             backtracking: false,
         }
     }
-    fn report(&self) -> CandidateReport {
+    pub(super) fn report(&self) -> CandidateReport {
         // In the saved sibling phase, the first subtree is exhausted and its
         // consumed suffix has already been popped. Credit that half before the
         // next choose() step flips the frame's stored alternative index.
@@ -135,6 +135,40 @@ impl<C: CutState> Candidate<C> {
         original: &Puzzle,
         stop: Option<&AtomicBool>,
     ) -> Self {
+        self.run_limited::<DIAG, MEMO, false>(budget, u64::MAX, original, stop)
+    }
+    pub(super) fn run_cube_budget(
+        self,
+        budget: u64,
+        max_solutions: u64,
+        original: &Puzzle,
+        options: &Options,
+    ) -> Self {
+        match (options.diag_shortcut, options.memo_bits != 0) {
+            (false, false) => {
+                self.run_limited::<false, false, true>(budget, max_solutions, original, None)
+            }
+            (false, true) => {
+                self.run_limited::<false, true, true>(budget, max_solutions, original, None)
+            }
+            (true, false) => {
+                self.run_limited::<true, false, true>(budget, max_solutions, original, None)
+            }
+            (true, true) => {
+                self.run_limited::<true, true, true>(budget, max_solutions, original, None)
+            }
+        }
+    }
+    fn run_limited<const DIAG: bool, const MEMO: bool, const LIMITED: bool>(
+        mut self,
+        budget: u64,
+        max_solutions: u64,
+        original: &Puzzle,
+        stop: Option<&AtomicBool>,
+    ) -> Self {
+        if LIMITED && self.out.solutions >= max_solutions {
+            self.finished = true;
+        }
         if self.finished || (self.backtracking && self.board.steps >= budget) {
             return self;
         }
@@ -170,7 +204,21 @@ impl<C: CutState> Candidate<C> {
                     good = propagate_optional!(board, DIAG);
                 }
             },
-            {},
+            {
+                // A solution is counted before this retreat hook, including later
+                // solutions for which the first-solution publish hook is skipped.
+                if LIMITED && out.solutions >= max_solutions {
+                    return Self {
+                        board,
+                        out,
+                        memo,
+                        good,
+                        started: true,
+                        finished: true,
+                        backtracking: false,
+                    };
+                }
+            },
             {},
             {
                 if MEMO && memo.as_mut().unwrap().observe(&board, out.solutions, good) {
